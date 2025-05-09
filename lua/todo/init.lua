@@ -3,21 +3,25 @@ local M = {}
 local function create_floating_window(config)
 	local width = math.floor(vim.o.columns * 0.8)
   local height = math.floor(vim.o.lines * 0.8)
-
 	config = config or {
-    relative = "win",
-    -- relative = "editor",
+    -- relative = "win",
+    relative = "editor",
     width = width,
     height = height,
-    col = (vim.o.columns - width)/2,
-    row = (vim.o.lines - height)/2,
+    col = math.floor(vim.o.columns * 0.1),
+    row = math.floor(vim.o.lines * 0.1),
+		bufpos = {5,5},
 		border = "rounded"
   }
 
-  local buf = vim.api.nvim_create_buf(false, true) -- No file, scratch buffer
-  local win = vim.api.nvim_open_win(buf, true, config)
+	M.max_win_height = height
 
-  return { buf = buf, win = win }
+	if M.todo_open ~= true then
+		M.bufnr = vim.api.nvim_create_buf(false, true) -- No file, scratch buffer
+	end
+  local win = vim.api.nvim_open_win(M.bufnr, true, config)
+
+  return win
 end
 
 ---@param self string
@@ -40,9 +44,9 @@ local get_pages = function (blob)
 	local current_title = ""
 	local cp_line_count = 0
 	local total_pages = 0
-	for _, line in ipairs(blob) do
+	for line in blob:gmatch("[^\r\n]+") do
 		if "---" == line then
-			table.insert(pages, {title = current_title, content = current_page})
+			table.insert(pages, {title = current_title, content = current_page, len = cp_line_count})
 			current_page = {}
 			cp_line_count = 0
 			total_pages = total_pages + 1
@@ -52,25 +56,37 @@ local get_pages = function (blob)
 				if heading_detected then
 					line:gsub("^#+", "")
 					current_title = line
+					cp_line_count = 1
 				else
 					current_title = string.format("Page %d", total_pages+1)
+					cp_line_count = 1
 				end
 			end
-			table.insert(current_page, line)
-			cp_line_count = cp_line_count + 1
+			-- table.insert(current_page, line)
+			-- cp_line_count = cp_line_count + 1
+			if not heading_detected then
+				table.insert(current_page, line)
+				cp_line_count = cp_line_count + 1
+			end
+		end
 	end
-end
-if cp_line_count > 0 then
-	table.insert(pages, current_page)
-	total_pages = total_pages + 1
-end
-return {pages = pages, count = total_pages}
+	if cp_line_count > 0 then
+		table.insert(pages, {title = current_title, content = current_page, len = cp_line_count})
+		total_pages = total_pages + 1
+	end
+	return {pages = pages, count = total_pages}
 end
 
 local set_content = function ()
+	local win_height = M.pages[M.current_page].len
+	if win_height < 3 then
+		win_height = 3
+	elseif win_height > M.max_win_height then
+		win_height = M.max_win_height
+	end
 	vim.api.nvim_buf_set_option(M.bufnr, "modifiable", true)
 	vim.api.nvim_buf_set_lines(M.bufnr, 0, -1, false, M.pages[M.current_page].content)
-	vim.api.nvim_win_set_config(M.win, { title = "  " .. M.pages[M.current_page].title , footer = string.format(" %d of %d  -- todo list  ", M.current_page, M.total_pages), footer_pos = "right" })
+	vim.api.nvim_win_set_config(M.win, { height = 2 + win_height, title = "  " .. M.pages[M.current_page].title , footer = string.format(" %d of %d  -- todo list  ", M.current_page, M.total_pages), footer_pos = "right" })
 	vim.bo[M.bufnr].filetype = "markdown"
 	vim.api.nvim_buf_set_option(M.bufnr, "modifiable", false)
 end
@@ -85,14 +101,12 @@ M.jump_to_page = function (num)
 	set_content()
 end
 
----@param data string
-M.open = function (data)
-	local file_content = data:split("\n")
+---@param file_content string
+M.open = function (file_content)
+	-- local file_content = data:split("\n")
 	local pages = get_pages(file_content)
 	M.pages = pages.pages
-	local float_win = create_floating_window()
-	M.bufnr = float_win.buf
-	M.win = float_win.win
+	M.win = create_floating_window()
 	vim.bo[M.bufnr].swapfile = false
 	M.total_pages = pages.count
 	set_content()
@@ -111,7 +125,9 @@ M.t = function ()
 end
 
 M.close = function ()
-
+	vim.api.nvim_win_close(M.win, true)
+	M.win = nil
+	M.todo_open = false
 end
 
 M.next_page = function ()
@@ -153,6 +169,7 @@ M.first = function()
 	local content = ""
 	if file then
 		content = file:read("*aL")
+		file:close()
 	else
 		content = ""
 	end
